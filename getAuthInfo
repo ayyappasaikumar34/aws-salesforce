@@ -1,0 +1,36 @@
+from typing import Dict, Any
+from salesforce_auth import SalesforceAuth
+import logging
+
+# Configure logger
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    logger.info("Starting Lambda execution")
+    logger.info(f"Event received: {event}")
+    
+    try:
+        logger.info("Initializing Salesforce authentication")
+        sf_auth = SalesforceAuth()
+        
+        logger.info("Attempting to get Salesforce token")
+        token_response = sf_auth.get_token()
+        
+        logger.info("Successfully obtained Salesforce token")
+        return {
+            'statusCode': 200,
+            'body': {
+                'access_token': token_response.get('access_token'),
+                'instance_url': token_response.get('instance_url')
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in lambda_handler: {str(e)}", exc_info=True)
+        return {
+            'statusCode': 500,
+            'body': {'error': str(e)}
+        }
+    finally:
+        logger.info("Completed Lambda execution")
