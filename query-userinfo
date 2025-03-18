@@ -1,0 +1,95 @@
+import json
+import logging
+import requests
+from typing import Dict, Any
+from urllib.parse import quote
+
+# Configure logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    try:
+        logger.info(f"Received event: {json.dumps(event)}")
+
+        # Extract required information from event
+        instance_url = event.get('authInfo', {}).get('instance_url')
+        token = event.get('authInfo', {}).get('token')
+        email = event.get('Email')
+
+        # Validate required fields
+        if not instance_url or not token or not email:
+            raise ValueError("Missing required fields: instance_url, token, or email")
+
+        # If token is a list (as shown in your sample), get the first element
+        if isinstance(token, list):
+            token = token[0]
+
+        # Construct the SOQL query
+        soql_query = f"SELECT Id,Name,Email FROM Contact WHERE Email='{email}'"
+        encoded_query = quote(soql_query)
+
+        # Construct the full URL
+        api_version = "v63.0"
+        url = f"{instance_url}/services/data/{api_version}/query?q={encoded_query}"
+
+        logger.info(f"Making API call to URL: {url}")
+
+        # Set up headers with OAuth token
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json'
+        }
+
+        # Make the API call
+        response = requests.get(
+            url,
+            headers=headers
+        )
+
+        # Log response status
+        logger.info(f"Received response with status code: {response.status_code}")
+
+        # Raise exception for error status codes
+        response.raise_for_status()
+
+        # Parse response
+        salesforce_data = response.json()
+        logger.info(f"Received Salesforce data: {json.dumps(salesforce_data)}")
+
+        # Return response including original event data
+        return {
+            'statusCode': 200,
+            'body': {
+                # Pass through original input
+                'identification': event.get('identification'),
+                'staticid': event.get('staticid'),
+                'FirstName': event.get('FirstName'),
+                'LastName': event.get('LastName'),
+                'Email': event.get('Email'),
+                'Manager': event.get('Manager'),
+                'date of birth': event.get('date of birth'),
+                'authInfo': event.get('authInfo'),
+                # Add Salesforce query results
+                'salesforce_user_data': salesforce_data
+            }
+        }
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error making Salesforce API call: {str(e)}", exc_info=True)
+        return {
+            'statusCode': 500,
+            'body': {
+                'error': f"Salesforce API call failed: {str(e)}",
+                'original_event': event
+            }
+        }
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+        return {
+            'statusCode': 500,
+            'body': {
+                'error': f"Unexpected error occurred: {str(e)}",
+                'original_event': event
+            }
+        }
