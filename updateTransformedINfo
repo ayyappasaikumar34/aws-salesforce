@@ -1,0 +1,170 @@
+import json
+import logging
+import requests
+from typing import Dict, Any, Optional
+
+# Configure logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def extract_salesforce_id(event: Dict[str, Any]) -> Optional[str]:
+    try:
+        logger.info("Starting Salesforce ID extraction")
+        
+        user_info = event.get('userInfo', {})
+        payload = user_info.get('Payload', {})
+        body = payload.get('body', {})
+        sf_data = body.get('salesforce_user_data', {})
+        records = sf_data.get('records', [])
+
+        if records and len(records) > 0:
+            salesforce_id = records[0].get('Id')
+            if salesforce_id:
+                logger.info(f"Successfully extracted Salesforce ID: {salesforce_id}")
+                return salesforce_id
+            
+        logger.warning("No Salesforce ID found in the structure")
+        return None
+
+    except Exception as e:
+        logger.error(f"Error extracting Salesforce ID: {str(e)}", exc_info=True)
+        return None
+
+def transform_user_data(event: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        logger.info("Starting data transformation")
+        
+        salesforce_id = extract_salesforce_id(event)
+        if not salesforce_id:
+            raise ValueError("Could not extract Salesforce Contact ID from the response")
+
+        transformed_data = {
+            'identification__c': event.get('identification'),
+            'staticid__c': event.get('staticid'),
+            'FirstName__c': event.get('FirstName'),
+            'LastName': event.get('LastName'),
+            'Email': event.get('Email'),
+            'Employehead__c': salesforce_id,
+            'Manager__c': salesforce_id,
+            'date_of_birth__c': event.get('date of birth')
+        }
+
+        logger.info(f"Transformed data: {json.dumps(transformed_data)}")
+        return transformed_data
+
+    except Exception as e:
+        logger.error(f"Error in transform_user_data: {str(e)}")
+        raise
+
+def create_salesforce_contact(auth_info: Dict[str, Any], contact_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create a new Contact record in Salesforce using OAuth2 token
+    """
+    try:
+        logger.info("Preparing to create Salesforce Contact")
+        
+        # Extract authentication information
+        instance_url = auth_info.get('instance_url')
+        token = auth_info.get('token')
+
+        if not instance_url or not token:
+            raise ValueError("Missing required authentication information")
+
+        # Handle token if it's in a list
+        if isinstance(token, list):
+            token = token[0]
+
+        # Construct the API endpoint
+        api_version = "v63.0"
+        endpoint = f"{instance_url}/services/data/{api_version}/sobjects/Contact"
+        
+        # Set up headers with OAuth token
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json'
+        }
+
+        logger.info(f"Making POST request to: {endpoint}")
+        logger.info("Using OAuth2 token for authentication")
+        logger.info(f"Request payload: {json.dumps(contact_data)}")
+
+        # Make the API call
+        response = requests.post(
+            endpoint,
+            headers=headers,
+            json=contact_data
+        )
+
+        # Log response details for debugging
+        logger.info(f"Response status code: {response.status_code}")
+        logger.info(f"Response headers: {dict(response.headers)}")
+        
+        # Check if the request was successful
+        if response.status_code == 401:
+            logger.error("Authentication failed - Invalid session ID or token expired")
+            raise requests.exceptions.RequestException("Authentication failed - Invalid session ID or token expired")
+            
+        response.raise_for_status()
+
+        # Parse and return the response
+        response_data = response.json()
+        logger.info(f"Successfully created Contact. Response: {json.dumps(response_data)}")
+        return response_data
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Salesforce API call failed: {str(e)}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"Error response: {e.response.text}")
+        raise
+
+def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    try:
+        logger.info(f"Received event: {json.dumps(event)}")
+
+        # Get Salesforce authentication details first
+        auth_info = event.get('authInfo')
+        if not auth_info:
+            raise ValueError("Missing authInfo in event")
+
+        # Transform the data
+        transformed_data = transform_user_data(event)
+
+        # Create Contact in Salesforce using auth_info
+        salesforce_response = create_salesforce_contact(auth_info, transformed_data)
+
+        return {
+            'statusCode': 200,
+            'body': {
+                'message': 'Contact created successfully in Salesforce',
+                'salesforce_response': salesforce_response,
+                'transformed_data': transformed_data
+            }
+        }
+
+    except ValueError as ve:
+        logger.error(f"Validation error: {str(ve)}")
+        return {
+            'statusCode': 400,
+            'body': {
+                'error': str(ve),
+                'type': 'ValidationError'
+            }
+        }
+    except requests.exceptions.RequestException as re:
+        logger.error(f"Salesforce API error: {str(re)}", exc_info=True)
+        return {
+            'statusCode': 502,
+            'body': {
+                'error': f"Salesforce API error: {str(re)}",
+                'type': 'APIError'
+            }
+        }
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+        return {
+            'statusCode': 500,
+            'body': {
+                'error': f"Unexpected error occurred: {str(e)}",
+                'type': 'ServerError'
+            }
+        }
